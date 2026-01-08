@@ -1,9 +1,12 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
-class SignUpSchema(BaseModel):
-    email: EmailStr
-    password: str
+class PostCreate(BaseModel):
+    
+    content: str
+    user_id: int
 
-class LoginSchema(BaseModel):
-    email: EmailStr
-    password: str
+class PostResponse(PostCreate):
+    id: int
+
+    class Config:
+        from_attributes = True
