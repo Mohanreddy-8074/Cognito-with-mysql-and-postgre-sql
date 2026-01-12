@@ -1,0 +1,390 @@
+##########################################################################################################3#logging_cognif file.py
+
+import logging
+import watchtower
+
+LOG_GROUP_NAME = "fastapi-application-logs"
+
+cloudwatch_handler = watchtower.CloudWatchLogHandler(
+    log_group=LOG_GROUP_NAME,
+    stream_name="fastapi-stream"
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[cloudwatch_handler],
+)
+
+logger = logging.getLogger("fastapi-logger")
+
+
+
+########################################################################################################3loggining middleware.py file
+
+import time
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from cloudwatch.logging_config import logger
+
+
+class LoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        response = await call_next(request)
+        duration = round(time.time() - start_time, 3)
+
+        logger.info(
+            f"METHOD={request.method} | "
+            f"PATH={request.url.path} | "
+            f"STATUS={response.status_code} | "
+            f"TIME={duration}s"
+        )
+
+        return response
+
+
+
+###############################################################################################################Exception handler.py file
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from cloudwatch.logging_config import logger
+
+
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        f"ERROR | METHOD={request.method} | "
+        f"PATH={request.url.path} | "
+        f"MESSAGE={str(exc)}",
+        exc_info=True,
+    )
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+    )
+
+
+##################################################################################################################cloudwatchmain.py file
+
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr
+import boto3, uuid, requests
+from jose import jwt
+
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    DateTime,
+    func,
+    or_,
+)
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.exc import IntegrityError
+from botocore.exceptions import ClientError
+
+from cloudwatch.logging_config import logger
+from cloudwatch.middleware.logging_middleware import LoggingMiddleware
+from cloudwatch.exception_handler import global_exception_handler
+
+# ======================================================
+# FASTAPI
+# ======================================================
+
+app = FastAPI(
+    title="Perform Cloudwatch loggings with all API'S",
+)
+
+app.add_middleware(LoggingMiddleware)
+app.add_exception_handler(Exception, global_exception_handler)
+
+# ======================================================
+# AWS COGNITO
+# ======================================================
+
+AWS_REGION = "eu-north-1"
+CLIENT_ID = "1spcdlri8n7a2bac9rjn7bom2d"
+USER_POOL_ID = "eu-north-1_e1yhF9naK"
+
+cognito = boto3.client("cognito-idp", region_name=AWS_REGION)
+
+# ======================================================
+# TOKEN VALIDATION
+# ======================================================
+
+security = HTTPBearer()
+ISSUER = f"https://cognito-idp.{AWS_REGION}.amazonaws.com/{USER_POOL_ID}"
+jwks = requests.get(f"{ISSUER}/.well-known/jwks.json").json()
+
+
+def verify_access_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+):
+    try:
+        logger.debug("Token verification started")
+
+        token = credentials.credentials
+        logger.debug("Access token extracted from Authorization header")
+
+        header = jwt.get_unverified_header(token)
+        logger.debug(f"JWT header: {header}")
+
+        key = next(k for k in jwks["keys"] if k["kid"] == header["kid"])
+
+        payload = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            issuer=ISSUER,
+            options={"verify_aud": False},
+        )
+
+        logger.debug("Token verification successful")
+        return payload
+
+    except Exception as e:
+        # 🔥 THIS IS THE BUG VISIBILITY
+        logger.error(
+            f"Token verification failed | reason={str(e)}",
+            exc_info=True
+        )
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token",
+        )
+# ======================================================
+# DATABASE
+# ======================================================
+
+DATABASE_URL = "postgresql+psycopg2://postgres:Mohan%4028169@localhost:5432/mydb"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+# ======================================================
+# MODEL
+# ======================================================
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    cognito_user_id = Column(UUID(as_uuid=True), unique=True, nullable=False)
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    age = Column(Integer)
+    email = Column(String(255), unique=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, onupdate=func.now())
+    last_login_at = Column(DateTime)
+    deleted_at = Column(DateTime)
+
+Base.metadata.create_all(bind=engine)
+
+# ======================================================
+# SCHEMAS
+# ======================================================
+
+class SignupRequest(BaseModel):
+    first_name: str
+    last_name: str
+    age: int
+    email: EmailStr
+    password: str
+    confirm_password: str
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class UpdateUserRequest(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    age: int | None = None
+
+class OtpVerifyRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+# ======================================================
+# SIGNUP
+# ======================================================
+
+@app.post("/signup")
+def signup(request: SignupRequest):
+    logger.info(f"Signup request for {request.email}")
+
+    if request.password != request.confirm_password:
+        logger.warning("Password mismatch")
+        raise HTTPException(400, "Passwords do not match")
+
+    try:
+        res = cognito.sign_up(
+            ClientId=CLIENT_ID,
+            Username=request.email,
+            Password=request.password,
+            UserAttributes=[{"Name": "email", "Value": request.email}],
+        )
+
+        db = SessionLocal()
+        db.add(
+            User(
+                cognito_user_id=uuid.UUID(res["UserSub"]),
+                first_name=request.first_name,
+                last_name=request.last_name,
+                age=request.age,
+                email=request.email,
+            )
+        )
+        db.commit()
+        db.close()
+
+        logger.info(f"Signup successful for {request.email}")
+        return {"message": "Signup successful. OTP sent"}
+
+    except ClientError as e:
+        logger.error(f"Cognito signup error: {e}", exc_info=True)
+        raise HTTPException(400, e.response["Error"]["Message"])
+
+    except IntegrityError:
+        logger.warning("User already exists in DB")
+        raise HTTPException(400, "User already exists")
+
+# ======================================================
+# VERIFY OTP
+# ======================================================
+
+@app.post("/verify-otp")
+def verify_otp(request: OtpVerifyRequest):
+    logger.info(f"OTP verification for {request.email}")
+
+    try:
+        cognito.confirm_sign_up(
+            ClientId=CLIENT_ID,
+            Username=request.email,
+            ConfirmationCode=request.otp,
+        )
+        return {"message": "OTP verified"}
+
+    except Exception as e:
+        logger.error(f"OTP verification failed: {e}", exc_info=True)
+        raise HTTPException(400, "OTP verification failed")
+
+# ======================================================
+# LOGIN
+# ======================================================
+
+@app.post("/login", tags=["Cognito Auth"])
+def login(request: LoginRequest):
+    logger.info(f"Login attempt started for email={request.email}")
+
+    try:
+        response = cognito.initiate_auth(
+            ClientId=CLIENT_ID,
+            AuthFlow="USER_PASSWORD_AUTH",
+            AuthParameters={
+                "USERNAME": request.email,
+                "PASSWORD": request.password,
+            },
+        )
+
+        logger.info(f"Login successful for email={request.email}")
+        return response["AuthenticationResult"]
+
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+        error_message = e.response["Error"]["Message"]
+
+        logger.error(
+            f"Cognito login failed | code={error_code} | message={error_message}"
+        )
+
+        # 🔥 RETURN THE REAL COGNITO ERROR
+        raise HTTPException(
+            status_code=401,
+            detail=f"{error_code}: {error_message}",
+        )
+
+# ======================================================
+# GET USER
+# ======================================================
+
+@app.get("/users")
+def get_user(token_payload=Depends(verify_access_token)):
+    cognito_uuid = token_payload["sub"]
+    logger.info(f"Fetching profile for {cognito_uuid}")
+
+    db = SessionLocal()
+    user = db.query(User).filter(
+        User.cognito_user_id == uuid.UUID(cognito_uuid),
+        User.deleted_at.is_(None),
+    ).first()
+    db.close()
+
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    return user
+
+# ======================================================
+# UPDATE USER
+# ======================================================
+
+@app.put("/users/me")
+def update_user(
+    request: UpdateUserRequest,
+    token_payload=Depends(verify_access_token),
+):
+    cognito_uuid = token_payload["sub"]
+    logger.info(f"Updating profile for {cognito_uuid}")
+
+    db = SessionLocal()
+    user = db.query(User).filter(
+        User.cognito_user_id == uuid.UUID(cognito_uuid),
+        User.deleted_at.is_(None),
+    ).first()
+
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    if request.first_name:
+        user.first_name = request.first_name
+    if request.last_name:
+        user.last_name = request.last_name
+    if request.age:
+        user.age = request.age
+
+    user.updated_at = func.now()
+    db.commit()
+    db.close()
+
+    logger.info("Profile updated")
+    return {"message": "Profile updated successfully"}
+
+# ======================================================
+# DELETE USER (SOFT DELETE)
+# ======================================================
+
+@app.delete("/users/search")
+def delete_user(identifier: str, token=Depends(verify_access_token)):
+    logger.info(f"Delete request for {identifier}")
+
+    db = SessionLocal()
+    user = db.query(User).filter(User.email == identifier).first()
+
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    user.deleted_at = func.now()
+    db.commit()
+    db.close()
+
+    logger.info("User soft deleted")
+    return {"message": "User deleted"}
+
