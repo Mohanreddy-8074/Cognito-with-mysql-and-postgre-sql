@@ -1,22 +1,24 @@
 from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from alembicss import crud, models, schemas, database
 
 app = FastAPI()
 
 # Dependency
-def get_db():
-    db = database.SessionLocal()
-    try:
+async def get_db():
+    async with database.SessionLocal() as db:
         yield db
-    finally:
-        db.close()
 
 @app.post("/items/", response_model=schemas.ItemResponse)
-def create_item(item: schemas.ItemCreate, db: Session = Depends(get_db)):
-    return crud.create_item(db=db, item=item)
+async def create_item(
+    item: schemas.ItemCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    return await crud.create_item(db=db, item=item)
 
 @app.get("/items/", response_model=list[schemas.ItemResponse])
-def read_items(db: Session = Depends(get_db)):
-    return crud.get_items(db)
+async def read_items(
+    db: AsyncSession = Depends(get_db)
+):
+    return await crud.get_items(db)

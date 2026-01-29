@@ -1,6 +1,5 @@
 import boto3
 import traceback
-
 import os
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -15,7 +14,7 @@ ses = boto3.client(
     region_name=AWS_REGION
 )
 
-def send_welcome_email(to_email: str):
+async def send_welcome_email(to_email: str):
     print("Background email started for:", to_email)
 
     try:
