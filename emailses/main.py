@@ -18,18 +18,18 @@ class SignupRequest(BaseModel):
 @app.post("/signup")
 async def signup(user: SignupRequest, background_tasks: BackgroundTasks):
 
-    # ✅ Check if user already exists
+    # Check if user already exists
     if user.email in users_db:
         return {
             "message": "User already exists",
             "email_status": "Welcome email NOT sent"
         }
 
-    # ✅ First time user → create user
+    #  First time user → create user
     users_db.add(user.email)
     print("NEW USER CREATED:", user.email)
 
-    # ✅ Send welcome email ONLY ONCE (background)
+    # Send welcome email ONLY ONCE (background)
     background_tasks.add_task(send_welcome_email, user.email)
 
     return {
