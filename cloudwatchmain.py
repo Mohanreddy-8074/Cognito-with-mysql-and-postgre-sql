@@ -1,3 +1,12 @@
+#create .env file then add this in that file 
+
+
+#AWS Access Key ID: <your key>
+#AWS Secret Access Key: <your secret>
+#Default region name: ap-south-1   
+#Default output format: json
+
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -87,7 +96,7 @@ async def get_db():
     async with SessionLocal() as db:
         yield db
 
-# ---------------- SCHEMAS ----------------
+# ---------------- Validating SCHEMAS ----------------
 
 class SignupRequest(BaseModel):
     first_name: str
@@ -112,6 +121,7 @@ class OtpVerifyRequest(BaseModel):
 
 # ---------------- ROUTES ----------------
 
+#user signup with regioster email and password
 @app.post("/signup")
 async def signup(
     request: SignupRequest,
@@ -138,6 +148,7 @@ async def signup(
 
     return {"message": "Signup successful. OTP sent"}
 
+#verify the otp for user signup
 @app.post("/verify-otp")
 async def verify_otp(request: OtpVerifyRequest):
     cognito.confirm_sign_up(
@@ -147,6 +158,7 @@ async def verify_otp(request: OtpVerifyRequest):
     )
     return {"message": "OTP verified"}
 
+#Creating user login
 @app.post("/login")
 async def login(request: LoginRequest):
     response = cognito.initiate_auth(
@@ -159,6 +171,7 @@ async def login(request: LoginRequest):
     )
     return response["AuthenticationResult"]
 
+#Get the user details
 @app.get("/users")
 async def get_user(
     token_payload=Depends(verify_access_token),
@@ -177,6 +190,7 @@ async def get_user(
 
     return user
 
+#update the user details
 @app.put("/users/me")
 async def update_user(
     request: UpdateUserRequest,
@@ -206,6 +220,7 @@ async def update_user(
 
     return {"message": "Profile updated successfully"}
 
+#delete the user details
 @app.delete("/users/search")
 async def delete_user(
     identifier: str,
