@@ -7,7 +7,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
         response = await call_next(request)
-        duration = round(time.time() - start_time, 3)
+        duration = round(time.time() - start_time, 3)                                                                           
 
         logger.info(
             f"METHOD={request.method} | "
