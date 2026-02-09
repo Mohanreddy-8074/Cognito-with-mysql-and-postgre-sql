@@ -12,7 +12,6 @@ users_db = {}
 class User(BaseModel):
     name: str
     role: str
-
 # ---------------- BASIC APIs ----------------
 @app.get("/")
 def root():
